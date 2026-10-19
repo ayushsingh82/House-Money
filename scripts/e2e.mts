@@ -56,7 +56,7 @@ const hue = lab ? (Math.atan2(Number(lab[3]), Number(lab[2])) * 180) / Math.PI :
 check(hue > 30 && hue < 60, `accent is orange (hue ${hue.toFixed(0)}°, ${accent})`);
 
 console.log("\nLive simulation (autoplay)");
-await page.getByRole("link", { name: "Watch it run" }).first().click();
+await page.getByRole("link", { name: "Open the app" }).first().click();
 check(await visible(page, "Live Simulation"), "dashboard opens");
 check(await visible(page, "Settled", 30_000), "run reaches Settled");
 check(await visible(page, "1,000.00"), "banked shows 1,000.00");
@@ -82,6 +82,13 @@ check(await visible(page, "30s veto window"), "policy card shows the delay");
 check(await visible(page, '"timelock_ms": 30000'), "policy JSON shown");
 await page.getByRole("link", { name: "Event Log" }).click();
 check(await visible(page, "Gains cover the principal"), "event log lists the trigger");
+
+console.log("\nTrading Agent");
+await page.getByRole("link", { name: "Trading Agent" }).click();
+check(await visible(page, "Running the agent…", 2_000) || (await visible(page, "Asset price", 10_000)), "trading page loads and runs the agent");
+check(await visible(page, "Principal settled to the safe account", 40_000), "trading run banks the principal");
+await page.getByRole("button", { name: "Replay" }).click();
+check(await visible(page, "Waiting for a trend…", 3_000), "replay rewinds to the start");
 
 console.log("\nOwner veto");
 await page.goto(`${base}/dashboard`);

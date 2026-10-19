@@ -10,7 +10,8 @@ const SECTIONS: { label: string; items: { href: string; label: string; tag: stri
     label: "Overview",
     items: [
       { href: "/dashboard", label: "Live Simulation", tag: "00" },
-      { href: "/policy", label: "Signed Policy", tag: "01" },
+      { href: "/trading", label: "Trading Agent", tag: "01" },
+      { href: "/policy", label: "Signed Policy", tag: "02" },
     ],
   },
   {

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
-import { ArrowRight, Hourglass, Landmark, Scale } from "lucide-react";
+import { ArrowRight, Hourglass, Landmark, Scale, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const card = "rounded-2xl border bg-card p-4 shadow-[0_24px_60px_-15px] shadow-black/50 ring-1 ring-white/10";
@@ -34,6 +34,13 @@ export function Hero() {
             <p className="mt-1 text-xs text-muted-foreground">Exactly the stake. The exit is bounded too.</p>
           </div>
         </Float>
+        <Float className="left-[7%] bottom-[12%] rotate-[3deg]" duration={8} delay={3}>
+          <div className={cn(card, "w-56")}>
+            <ShieldCheck className="size-5 text-accent" />
+            <p className="mt-3 text-sm font-medium">Fails closed</p>
+            <p className="mt-1 text-xs text-muted-foreground">A stale price means the runner does nothing.</p>
+          </div>
+        </Float>
         <Float className="right-[8%] bottom-[14%] -rotate-[4deg]" duration={8} delay={2}>
           <div className={cn(card, "w-56")}>
             <Hourglass className="size-5 text-accent" />
@@ -45,7 +52,7 @@ export function Hero() {
       <div className="relative mx-auto max-w-6xl px-4 pb-32 pt-24 text-center sm:px-6 sm:pt-32 sm:pb-44">
         <span className="inline-flex items-center gap-2 rounded-full border bg-muted px-3 py-1 text-xs text-muted-foreground">
           <span className="size-1.5 rounded-full bg-accent" />
-          Experiment 18 · simulated on a mock Agent API
+          Experiment 18 · NEAR Intents Agent API
         </span>
         <h1 className="mx-auto mt-6 max-w-3xl font-display text-4xl font-semibold tracking-tight sm:text-6xl">
           Bank the principal. Trade the house&apos;s money.
@@ -55,12 +62,13 @@ export function Hero() {
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Link href="/dashboard?auto" className="inline-flex items-center gap-2 rounded-lg bg-foreground px-5 py-3 text-sm font-medium text-background transition-opacity hover:opacity-90">
-            Watch it run <ArrowRight className="size-4" />
+            Open the app <ArrowRight className="size-4" />
           </Link>
           <a href="#how" className="inline-flex items-center gap-2 rounded-lg border px-5 py-3 text-sm font-medium transition-colors hover:bg-muted">
             How it works
           </a>
         </div>
+        <p className="mt-4 text-xs text-muted-foreground">No wallet or funds needed. The app plays the full run on a policy-enforcing mock.</p>
       </div>
     </section>
   );
