@@ -67,6 +67,27 @@ const toOperation = (
   idempotencyKey,
 });
 
+/**
+ * The quote object's fields are not specified by the API schema, so read the output amount defensively
+ * (the 1Click-style `amountOut`, snake_case, or nested under `quote`) and return null if it is absent.
+ */
+export function quoteAmountOut(quote: unknown): string | null {
+  const find = (o: unknown, depth = 0): string | null => {
+    if (!o || typeof o !== "object" || depth > 2) return null;
+    const rec = o as Record<string, unknown>;
+    for (const k of ["amountOut", "amount_out", "destination_amount"]) {
+      const v = rec[k];
+      if ((typeof v === "string" || typeof v === "number") && /^[0-9]+$/.test(String(v))) return String(v);
+    }
+    for (const v of Object.values(rec)) {
+      const r = find(v, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  };
+  return find(quote);
+}
+
 const EMPTY_REQUEST: Operation["request"] = { asset: "", amount: "0", chain: "", recipient: "" };
 
 /**
@@ -151,6 +172,19 @@ export class LiveAgentApi implements AgentClient {
         translate(async () => {
           const res = await grant.withdraw(agentId, { asset: req.asset, amount: req.amount, chain: req.chain, recipient: req.recipient, ...(req.memo ? { memo: req.memo } : {}) }, { idempotencyKey });
           return toOperation(res, req, idempotencyKey);
+        }),
+      quote: (agentId, req) =>
+        translate(async () => {
+          const res = await grant.swap(agentId, { ...req, dry: true });
+          const amountOut = quoteAmountOut(res.quote);
+          if (amountOut === null) throw new AgentApiError("quote_unavailable", "quote carried no output amount", 502);
+          return { amountOut };
+        }),
+      swap: (agentId, req, { idempotencyKey }) =>
+        translate(async () => {
+          const res = await grant.swap(agentId, req, { idempotencyKey });
+          const op = toOperation(res, { asset: req.origin_asset, amount: req.amount, chain: "", recipient: "" }, idempotencyKey);
+          return { ...op, swap: { request: req } };
         }),
       transfer: (agentId, req) =>
         translate(async () => {

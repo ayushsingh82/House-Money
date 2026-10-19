@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { createGrantCredential, grantCommitment, type GenerateIntentResponse, type SignedData } from "@near-intents-agent-api/sdk";
 import { AgentApiError } from "@/lib/errors";
 import { buildHouseMoneyPolicy } from "@/lib/policy/policy";
-import { LiveAgentApi, mapStatus, type OwnerSigner } from "@/lib/agent-api/live";
+import { LiveAgentApi, mapStatus, quoteAmountOut, type OwnerSigner } from "@/lib/agent-api/live";
 
 const KEY = `naa_${"A".repeat(43)}`;
 const AGENT = "agent-1";
@@ -44,6 +44,46 @@ const signer = (calls: GenerateIntentResponse[] = []): OwnerSigner => ({
 const success = (type: string, extra = {}) => ({ type, correlation_id: "c-1", agent_id: AGENT, status: "SUCCESS", failure_code: null, ...extra });
 
 describe("LiveAgentApi (through the real SDK, fake network)", () => {
+  it("quotes a swap with dry:true and no idempotency key, and reads the output amount", async () => {
+    const { token } = createGrantCredential();
+    const { fetchFn, seen } = fakeApi({
+      [`POST /v1/agents/${AGENT}/swap`]: () => ({ status: 202, json: { dry: true, type: "swap", quote: { quote: { amountOut: "12345" } } } }),
+    });
+    const live = new LiveAgentApi({ apiKey: KEY, owner: signer(), fetch: fetchFn });
+    const out = await live.forGrant(token).quote(AGENT, { origin_asset: "a", destination_asset: "b", amount: "100" });
+    assert.deepEqual(out, { amountOut: "12345" });
+    assert.equal((seen[0]!.body as { dry: boolean }).dry, true);
+    assert.equal(seen[0]!.headers["idempotency-key"], undefined);
+  });
+
+  it("swaps under the grant with a min output and a stable key, and reports QUEUED", async () => {
+    const { token } = createGrantCredential();
+    const { fetchFn, seen } = fakeApi({
+      [`POST /v1/agents/${AGENT}/swap`]: () => ({ status: 202, json: { type: "swap", correlation_id: "c-s", agent_id: AGENT, status: "QUEUED", failure_code: null } }),
+    });
+    const live = new LiveAgentApi({ apiKey: KEY, owner: signer(), fetch: fetchFn });
+    const op = await live.forGrant(token).swap(AGENT, { origin_asset: "a", destination_asset: "b", amount: "100", min_amount_out: "90" }, { idempotencyKey: "swap:agent-1:1" });
+    assert.equal(op.status, "QUEUED");
+    assert.equal(op.swap?.request.min_amount_out, "90");
+    assert.equal(seen[0]!.headers["idempotency-key"], "swap:agent-1:1");
+    assert.equal(seen[0]!.headers["x-grant-token"], token);
+  });
+
+  it("a quote with no output amount is refused, not guessed", async () => {
+    const { token } = createGrantCredential();
+    const { fetchFn } = fakeApi({ [`POST /v1/agents/${AGENT}/swap`]: () => ({ status: 202, json: { dry: true, type: "swap", quote: { nothing: 1 } } }) });
+    const live = new LiveAgentApi({ apiKey: KEY, owner: signer(), fetch: fetchFn });
+    await assert.rejects(live.forGrant(token).quote(AGENT, { origin_asset: "a", destination_asset: "b", amount: "1" }), (e: unknown) => e instanceof AgentApiError && e.code === "quote_unavailable");
+  });
+
+  it("quoteAmountOut reads camelCase, snake_case and nested fields, and nothing else", () => {
+    assert.equal(quoteAmountOut({ amountOut: "5" }), "5");
+    assert.equal(quoteAmountOut({ amount_out: 7 }), "7");
+    assert.equal(quoteAmountOut({ quote: { amountOut: "9" } }), "9");
+    assert.equal(quoteAmountOut({ amountOut: "1.5" }), null);
+    assert.equal(quoteAmountOut(null), null);
+  });
+
   it("withdraws with the grant token and a stable idempotency key, and reports QUEUED", async () => {
     const { token } = createGrantCredential();
     const { fetchFn, seen } = fakeApi({

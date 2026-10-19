@@ -1,9 +1,13 @@
 import { AgentApiError } from "@/lib/errors";
 import type { Balances, Policy, TokenInfo, WithdrawRequest } from "@/lib/policy/types";
-import type { AgentClient, GrantClient, Operation } from "@/lib/agent-api/types";
+import type { AgentClient, GrantClient, Operation, SwapRequest } from "@/lib/agent-api/types";
+import { usdToMicro } from "@/lib/risk/pricing";
 
 /** Ordinary policy edits are at least this far apart on the real API; a pure freeze bypasses it. */
 export const POLICY_COOLDOWN_MS = 600_000;
+
+/** Fee the mock takes on every swap, in basis points. */
+export const MOCK_SWAP_FEE_BPS = 30n;
 
 type Grant = { agentId: string; label: string; expiresAt: number; revoked: boolean };
 type Agent = {
@@ -40,6 +44,8 @@ export class MockAgentApi implements AgentClient {
   private opAgent = new Map<string, string>();
   /** Settled withdrawals, newest last (for the dashboard and assertions). */
   readonly settled: Operation[] = [];
+  /** Executed swaps, newest last. */
+  readonly swaps: Operation[] = [];
   private seq = 0;
 
   constructor(
@@ -117,6 +123,11 @@ export class MockAgentApi implements AgentClient {
         return { balances: this.balances(agentId) };
       },
       withdraw: async (agentId, req, opts) => this.withdraw(token, agentId, req, opts.idempotencyKey),
+      quote: async (agentId, req) => {
+        this.agent(agentId);
+        return { amountOut: this.quoteOut(req).toString() };
+      },
+      swap: async (agentId, req, opts) => this.swap(token, agentId, req, opts.idempotencyKey),
       transfer: async (agentId, req) => {
         this.checkGrant(token, agentId);
         const policy = this.requirePolicy(agentId);
@@ -207,6 +218,61 @@ export class MockAgentApi implements AgentClient {
     return { ...op };
   }
 
+  /** Expected output at the catalog prices, after the mock fee. Throws `quote_unavailable` without both prices. */
+  private quoteOut(req: SwapRequest): bigint {
+    const inT = this.tokens.find((t) => t.asset_id === req.origin_asset);
+    const outT = this.tokens.find((t) => t.asset_id === req.destination_asset);
+    if (!inT || !outT || inT.price === null || outT.price === null) throw new AgentApiError("quote_unavailable", undefined, 400);
+    const valueMicro = (BigInt(req.amount) * usdToMicro(inT.price)) / 10n ** BigInt(inT.decimals);
+    const gross = (valueMicro * 10n ** BigInt(outT.decimals)) / usdToMicro(outT.price);
+    return (gross * (10_000n - MOCK_SWAP_FEE_BPS)) / 10_000n;
+  }
+
+  private async swap(token: string, agentId: string, req: SwapRequest, key: string) {
+    this.checkGrant(token, agentId);
+    const fingerprint = JSON.stringify(["swap", req.origin_asset, req.destination_asset, req.amount, req.min_amount_out ?? null]);
+    const replay = this.byKey.get(`${agentId}:${key}`);
+    if (replay) {
+      if (replay.fingerprint !== fingerprint) throw new AgentApiError("idempotency_conflict", undefined, 409);
+      return { ...replay.op };
+    }
+    const a = this.agent(agentId);
+    const p = this.requirePolicy(agentId);
+    if (p.frozen) throw new AgentApiError("wallet_frozen");
+    if (!p.actions.includes("swap")) throw new AgentApiError("policy_action_denied");
+    if (p.assets !== "any" && !(p.assets.includes(req.origin_asset) && p.assets.includes(req.destination_asset)))
+      throw new AgentApiError("policy_denied");
+    const amount = BigInt(req.amount);
+    if (amount <= 0n) throw new AgentApiError("invalid_amount", undefined, 400);
+    const cap = p.limits.per_transaction?.[req.origin_asset];
+    if (cap !== undefined && amount > BigInt(cap)) throw new AgentApiError("policy_limit_exceeded");
+    if (p.max_actions_per_hour !== null) {
+      const since = this.clock.now() - 3_600_000;
+      if (a.actionTimes.filter((t) => t > since).length >= p.max_actions_per_hour)
+        throw new AgentApiError("policy_action_limit_exceeded", undefined, 429);
+    }
+    if ((a.balances.get(req.origin_asset) ?? 0n) < amount) throw new AgentApiError("insufficient_balance");
+    const out = this.quoteOut(req);
+    // Mock-only code: the real API's response to an unmet min_amount_out is not documented.
+    if (req.min_amount_out !== undefined && out < BigInt(req.min_amount_out)) throw new AgentApiError("min_amount_out_not_met", undefined, 400);
+
+    const op: Operation = {
+      correlation_id: `op_mock_${++this.seq}`,
+      status: "QUEUED",
+      request: { asset: req.origin_asset, amount: req.amount, chain: "", recipient: "" },
+      idempotencyKey: key,
+      swap: { request: req },
+    };
+    a.actionTimes.push(this.clock.now());
+    this.ops.set(op.correlation_id, op);
+    this.byKey.set(`${agentId}:${key}`, { op, fingerprint });
+    this.opAgent.set(op.correlation_id, agentId);
+    // The policy delay applies to every money action except deposits, swaps included.
+    if (p.timelock_ms > 0) op.execute_after = new Date(this.clock.now() + p.timelock_ms).toISOString();
+    else this.execute(op, agentId);
+    return { ...op };
+  }
+
   /** Policy layers, in the order the real API reports them. */
   private validate(a: Agent, p: Policy, req: WithdrawRequest) {
     if (p.frozen) throw new AgentApiError("wallet_frozen");
@@ -252,6 +318,23 @@ export class MockAgentApi implements AgentClient {
     if (have < amount) {
       op.status = "FAILED";
       op.failure_code = "insufficient_balance";
+      return;
+    }
+    if (op.swap) {
+      // Re-priced at release, like the real service: the fill follows the market, not the request time.
+      const out = this.quoteOut(op.swap.request);
+      const min = op.swap.request.min_amount_out;
+      if (min !== undefined && out < BigInt(min)) {
+        op.status = "FAILED";
+        op.failure_code = "min_amount_out_not_met";
+        return;
+      }
+      const dest = op.swap.request.destination_asset;
+      a.balances.set(op.request.asset, have - amount);
+      a.balances.set(dest, (a.balances.get(dest) ?? 0n) + out);
+      op.swap.amountOut = out.toString();
+      op.status = "SUCCESS";
+      this.swaps.push({ ...op });
       return;
     }
     a.balances.set(op.request.asset, have - amount);

@@ -1,4 +1,9 @@
 export type RunnerState = {
+  /**
+   * Latched the first time equity reaches the trigger. From then on the principal is owed to the safe
+   * account even if equity dips again (a timelocked swap that raises the cash can take minutes to fill).
+   */
+  triggered?: boolean;
   /** True once the principal withdrawal was accepted by the API. Never reset. */
   banked: boolean;
   withdrawalId?: string;

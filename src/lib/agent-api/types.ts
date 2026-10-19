@@ -2,6 +2,14 @@ import type { Balances, Policy, TokenInfo, WithdrawRequest } from "@/lib/policy/
 
 export type OpStatus = "QUEUED" | "PROCESSING" | "SUCCESS" | "FAILED" | "CANCELLED";
 
+export type SwapRequest = {
+  origin_asset: string;
+  destination_asset: string;
+  amount: string;
+  /** Refuse a fill worse than this (atomic units of the destination asset). */
+  min_amount_out?: string;
+};
+
 export type Operation = {
   correlation_id: string;
   status: OpStatus;
@@ -10,12 +18,18 @@ export type Operation = {
   execute_after?: string;
   request: WithdrawRequest;
   idempotencyKey: string;
+  /** Present on swaps. `amountOut` is known once the swap has run. */
+  swap?: { request: SwapRequest; amountOut?: string };
 };
 
 /** Agent-side surface: what a grant holder can do. */
 export interface GrantClient {
   getBalances(agentId: string): Promise<{ balances: Balances }>;
   withdraw(agentId: string, req: WithdrawRequest, opts: { idempotencyKey: string }): Promise<Operation>;
+  /** Dry-run quote: expected output in the destination asset's atomic units. Moves nothing. */
+  quote(agentId: string, req: SwapRequest): Promise<{ amountOut: string }>;
+  /** Timelocked like every money action except deposits: it may return QUEUED and run later. */
+  swap(agentId: string, req: SwapRequest, opts: { idempotencyKey: string }): Promise<Operation>;
   /** Present so the simulation can show it refused when the policy omits "transfer". */
   transfer(agentId: string, req: { asset: string; amount: string; recipient: string }): Promise<Operation>;
 }

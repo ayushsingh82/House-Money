@@ -12,3 +12,5 @@ next-env.d.ts
 
 # Local notes, plan, findings, media and reference clones: kept on this machine, not published.
 docs/
+.house-state/
+.intents/

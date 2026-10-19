@@ -9,6 +9,15 @@ export type HouseMoneyPolicyInput = {
   safeAddress: string;
   /** Veto window on the principal exit. Production: 3_600_000 (1h). */
   timelockMs?: number;
+  /**
+   * Let the agent trade: adds `swap` and the risk assets. The timelock then delays every swap as well as
+   * the exit, so keep it short while trading. Withdraw stays pinned to the safe account.
+   */
+  trading?: {
+    /** Assets the agent may hold besides the stake, with their per-transaction caps (atomic). */
+    assets: Record<string, string>;
+    maxActionsPerHour?: number;
+  };
 };
 
 export const DEFAULT_TIMELOCK_MS = 3_600_000;
@@ -17,14 +26,15 @@ export const DEFAULT_TIMELOCK_MS = 3_600_000;
 export function buildHouseMoneyPolicy(input: HouseMoneyPolicyInput): Policy {
   if (input.principalAtomic <= 0n) throw new Error("principalAtomic must be positive");
   if (!input.safeAddress) throw new Error("safeAddress required");
+  const trading = input.trading;
   return {
     frozen: false,
-    actions: ["withdraw"],
+    actions: trading ? ["withdraw", "swap"] : ["withdraw"],
     confidential: false,
     owner_approval: false,
-    assets: [input.asset],
-    limits: { per_transaction: { [input.asset]: input.principalAtomic.toString() } },
-    max_actions_per_hour: 5,
+    assets: [input.asset, ...Object.keys(trading?.assets ?? {})],
+    limits: { per_transaction: { [input.asset]: input.principalAtomic.toString(), ...(trading?.assets ?? {}) } },
+    max_actions_per_hour: trading ? (trading.maxActionsPerHour ?? 30) : 5,
     destinations: {
       mode: "only",
       list: [{ action: "withdraw", chain: input.chain, address: input.safeAddress, memo: null }],

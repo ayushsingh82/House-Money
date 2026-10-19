@@ -18,4 +18,11 @@ describe("shouldBankPrincipal", () => {
   it("uses a fixed key per agent, not per date", () => {
     assert.equal(principalKey("a1"), "principal:a1");
   });
+  it("multipleBps allows a fractional trigger and wins over multiple", () => {
+    assert.equal(shouldBankPrincipal({ equity: 1_020_000n, principal: 1_000_000n, banked: false, multipleBps: 10_200n }), true);
+    assert.equal(shouldBankPrincipal({ equity: 1_019_999n, principal: 1_000_000n, banked: false, multipleBps: 10_200n }), false);
+    assert.equal(shouldBankPrincipal({ equity: 1_020_000n, principal: 1_000_000n, banked: false, multiple: 2n, multipleBps: 10_200n }), true);
+    assert.equal(shouldBankPrincipal({ equity: 2_000_000n, principal: 1_000_000n, banked: false }), true);
+  });
+
 });

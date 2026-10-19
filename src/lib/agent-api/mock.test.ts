@@ -127,3 +127,76 @@ describe("MockAgentApi policy enforcement", () => {
     await assert.rejects(house.withdraw(AGENT, req(), { idempotencyKey: "k" }), code("wallet_frozen"));
   });
 });
+
+describe("MockAgentApi swaps", () => {
+  const A = "nep141:a";
+  const B = "nep141:b";
+  const tokens = (now: Date) => [
+    { asset_id: A, symbol: "A", decimals: 6, blockchain: "near", price: 1, price_updated_at: now.toISOString(), price_expires_at: new Date(now.getTime() + 600_000).toISOString() },
+    { asset_id: B, symbol: "B", decimals: 6, blockchain: "near", price: 2, price_updated_at: now.toISOString(), price_expires_at: new Date(now.getTime() + 600_000).toISOString() },
+  ];
+  const policy = (over: Record<string, unknown> = {}) =>
+    ({ ...buildHouseMoneyPolicy({ asset: A, principalAtomic: 1_000_000n, chain: "base", safeAddress: "0xS", timelockMs: 0, trading: { assets: { [B]: "5000000" } } }), ...over }) as ReturnType<typeof buildHouseMoneyPolicy>;
+  async function setup(p = policy()) {
+    const api = new MockAgentApi([]);
+    api.setTokens(tokens(api.clock.date()));
+    api.createAgent("x", { [A]: 1_000_000n }, p);
+    const { token } = await api.issueGrant("x", "t", new Date(api.clock.now() + 1e6));
+    return { api, g: api.forGrant(token) };
+  }
+
+  it("quotes at catalog prices less the fee, and executes immediately without a timelock", async () => {
+    const { api, g } = await setup();
+    assert.equal((await g.quote("x", { origin_asset: A, destination_asset: B, amount: "1000000" })).amountOut, "498500");
+    const op = await g.swap("x", { origin_asset: A, destination_asset: B, amount: "1000000" }, { idempotencyKey: "swap-key-1" });
+    assert.equal(op.status, "SUCCESS");
+    assert.equal(op.swap?.amountOut, "498500");
+    assert.equal((await g.getBalances("x")).balances[B], "498500");
+    assert.equal(api.swaps.length, 1);
+  });
+
+  it("queues behind the timelock like any money action, and re-prices at release", async () => {
+    const { api, g } = await setup(policy({ timelock_ms: 5_000 }));
+    const op = await g.swap("x", { origin_asset: A, destination_asset: B, amount: "1000000" }, { idempotencyKey: "swap-key-2" });
+    assert.equal(op.status, "QUEUED");
+    api.setTokens(tokens(api.clock.date()).map((t) => (t.asset_id === B ? { ...t, price: 4 } : t)));
+    api.advance(5_000);
+    assert.equal((await api.getStatus(op.correlation_id)).swap?.amountOut, "249250");
+  });
+
+  it("fails at release when the fill is worse than min_amount_out", async () => {
+    const { api, g } = await setup(policy({ timelock_ms: 5_000 }));
+    const op = await g.swap("x", { origin_asset: A, destination_asset: B, amount: "1000000", min_amount_out: "490000" }, { idempotencyKey: "swap-key-3" });
+    api.setTokens(tokens(api.clock.date()).map((t) => (t.asset_id === B ? { ...t, price: 4 } : t)));
+    api.advance(5_000);
+    const done = await api.getStatus(op.correlation_id);
+    assert.equal(done.status, "FAILED");
+    assert.equal(done.failure_code, "min_amount_out_not_met");
+    assert.equal((await g.getBalances("x")).balances[A], "1000000");
+  });
+
+  it("refuses swaps the policy does not allow, with the API's codes", async () => {
+    const code = async (fn: () => Promise<unknown>) => {
+      try { await fn(); } catch (e) { return (e as { code: string }).code; }
+    };
+    const noSwap = await setup(buildHouseMoneyPolicyNoSwap());
+    assert.equal(await code(() => noSwap.g.swap("x", { origin_asset: A, destination_asset: B, amount: "1" }, { idempotencyKey: "swap-key-4" })), "policy_action_denied");
+    const { g } = await setup();
+    assert.equal(await code(() => g.swap("x", { origin_asset: A, destination_asset: "nep141:zzz", amount: "1" }, { idempotencyKey: "swap-key-5" })), "policy_denied");
+    assert.equal(await code(() => g.swap("x", { origin_asset: A, destination_asset: B, amount: "1000001" }, { idempotencyKey: "swap-key-6" })), "policy_limit_exceeded");
+    assert.equal(await code(() => g.swap("x", { origin_asset: B, destination_asset: A, amount: "10" }, { idempotencyKey: "swap-key-7" })), "insufficient_balance");
+  });
+
+  it("replays the same key and refuses a different body under it", async () => {
+    const { api, g } = await setup();
+    const a = await g.swap("x", { origin_asset: A, destination_asset: B, amount: "100" }, { idempotencyKey: "swap-key-8" });
+    const b = await g.swap("x", { origin_asset: A, destination_asset: B, amount: "100" }, { idempotencyKey: "swap-key-8" });
+    assert.equal(a.correlation_id, b.correlation_id);
+    assert.equal(api.swaps.length, 1);
+    await assert.rejects(g.swap("x", { origin_asset: A, destination_asset: B, amount: "200" }, { idempotencyKey: "swap-key-8" }), (e: unknown) => (e as { code: string }).code === "idempotency_conflict");
+  });
+});
+
+function buildHouseMoneyPolicyNoSwap() {
+  return buildHouseMoneyPolicy({ asset: "nep141:a", principalAtomic: 1_000_000n, chain: "base", safeAddress: "0xS", timelockMs: 0 });
+}

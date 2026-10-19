@@ -5,6 +5,7 @@
  * Exits non-zero if the story or any refusal check does not hold.
  */
 import { HouseMoneySimulation, SIM_SAFE } from "@/lib/simulation/scenario";
+import { TradingSimulation } from "@/lib/simulation/trading";
 import { runRefusalMatrix } from "@/lib/simulation/refusals";
 
 const realtime = process.argv.includes("--realtime");
@@ -54,6 +55,16 @@ assert(last.equityAtomic < P, `red day burned only house money (${usdc(last.equi
 
 console.log("\nRefusal matrix");
 for (const c of await runRefusalMatrix(s)) assert(c.pass, `${c.label} -> ${c.got}`);
+
+console.log("\nTrading agent (trend following through the policy)");
+const t = await new TradingSimulation().init();
+await t.runToEnd();
+const tLast = t.timeline[t.timeline.length - 1]!;
+assert(t.api.swaps.length >= 3, `the agent traded (${t.api.swaps.length} swaps filled)`);
+assert(t.api.settled.length === 1 && t.api.settled[0]?.request.amount === t.principalAtomic.toString(), "principal exit executed exactly once, for exactly the principal");
+assert(t.log.ofType("trigger").length === 1, "one trigger");
+assert(tLast.bankedMicroUsd === t.principalAtomic, `banked ${usdc(tLast.bankedMicroUsd)}`);
+assert(tLast.equityMicroUsd >= t.principalAtomic, `stake still whole after the drawdown (${usdc(tLast.equityMicroUsd)} left in the agent)`);
 
 console.log(`\n${failures === 0 ? "ALL CHECKS HELD" : `${failures} CHECK(S) FAILED`} in ${wall()} wall time`);
 process.exit(failures === 0 ? 0 : 1);

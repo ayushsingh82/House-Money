@@ -22,6 +22,8 @@ export type RunnerConfig = {
   now?: () => Date;
   /** Equity/principal ratio that triggers banking. 2 = gains equal principal. */
   multiple?: bigint;
+  /** Basis-point form of `multiple` (20_000 = 2x); wins when both are set. */
+  multipleBps?: bigint;
   /**
    * After the exit settles, update the policy to drop `withdraw` so no grant can withdraw again.
    * Off by default: it is an owner-signed policy change and departs from the original spec.
@@ -48,12 +50,14 @@ export class HouseMoneyRunner {
     if (state.banked) return this.reportSettlement(state);
 
     let equity: bigint;
+    let held: bigint;
     try {
       const [{ balances }, tokens] = await Promise.all([
         this.cfg.grant.getBalances(this.cfg.agentId),
         this.cfg.client.getTokens(),
       ]);
       equity = portfolioValueMicroUsd(balances, tokens, this.now());
+      held = BigInt(balances[this.cfg.asset] ?? "0");
     } catch (e) {
       if (e instanceof PriceUnavailableError) {
         this.log.emit({ type: "price_unavailable", at: this.at(), assetId: e.assetId, reason: e.message });
@@ -64,9 +68,17 @@ export class HouseMoneyRunner {
 
     const principal = this.cfg.principalMicroUsd;
     this.log.emit({ type: "tick", at: this.at(), equityMicroUsd: equity.toString(), principalMicroUsd: principal.toString() });
-    if (!shouldBankPrincipal({ equity, principal, banked: false, multiple: this.cfg.multiple })) return;
+    if (!state.triggered) {
+      if (!shouldBankPrincipal({ equity, principal, banked: false, multiple: this.cfg.multiple, multipleBps: this.cfg.multipleBps })) return;
+      this.log.emit({ type: "trigger", at: this.at(), equityMicroUsd: equity.toString(), principalMicroUsd: principal.toString() });
+      await this.cfg.store.save({ ...state, triggered: true });
+    }
 
-    this.log.emit({ type: "trigger", at: this.at(), equityMicroUsd: equity.toString(), principalMicroUsd: principal.toString() });
+    // Gains held in another asset cannot be withdrawn as the stake: wait until the trader has raised the cash.
+    if (held < this.cfg.principalAtomic) {
+      this.log.emit({ type: "awaiting_cash", at: this.at(), heldAtomic: held.toString(), neededAtomic: this.cfg.principalAtomic.toString() });
+      return;
+    }
     try {
       // Withdraw first, persist second: a crash in between retries under the same key and replays.
       const op = await this.cfg.grant.withdraw(
@@ -74,7 +86,7 @@ export class HouseMoneyRunner {
         { asset: this.cfg.asset, amount: this.cfg.principalAtomic.toString(), chain: this.cfg.chain, recipient: this.cfg.safeAddress },
         { idempotencyKey: principalKey(this.cfg.agentId) },
       );
-      await this.cfg.store.save({ banked: true, withdrawalId: op.correlation_id, bankedAt: this.at() });
+      await this.cfg.store.save({ ...state, triggered: true, banked: true, withdrawalId: op.correlation_id, bankedAt: this.at() });
       this.log.emit({ type: "withdraw_queued", at: this.at(), correlationId: op.correlation_id, executeAfter: op.execute_after });
     } catch (e) {
       if (e instanceof AgentApiError) {
