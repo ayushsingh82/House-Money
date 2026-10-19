@@ -1,0 +1,203 @@
+# House Money
+
+Policy-enforced principal protection for autonomous trading agents, built on the NEAR Intents Agent API.
+
+An agent trades with an owner's capital. The moment its gains equal the principal, the principal
+withdraws itself to a safe account, automatically and exactly once. Everything after that is the
+house's money: the worst case is already banked, and no later prompt, market crash or compromised
+strategy can reach it.
+
+*Experiment 18, Treasury theme.*
+
+| | |
+|---|---|
+| **Stack** | Next.js (App Router), React, Tailwind CSS v4, TypeScript |
+| **Integration** | `@near-intents-agent-api/sdk` (real client) and a policy-enforcing mock |
+| **Verification** | 58 unit tests, a 21-check browser test, a headless end-to-end simulation |
+| **Status** | Complete on the mock. Live mainnet run pending credentials and funds (see [Going live](#going-live)) |
+
+## Contents
+
+1. [Overview](#overview)
+2. [How it works](#how-it-works)
+3. [Safety model](#safety-model)
+4. [Getting started](#getting-started)
+5. [Scripts](#scripts)
+6. [Project structure](#project-structure)
+7. [Testing](#testing)
+8. [Demonstration](#demonstration)
+9. [Known limitations](#known-limitations)
+10. [Going live](#going-live)
+
+## Overview
+
+Use cases the system supports:
+
+- **Bank the stake.** Withdraw the initial principal as soon as gains cover it, then never re-risk it.
+- **Bounded drawdowns.** After the exit, losses can only consume unrealized gains, never the banked principal.
+- **One-way destination.** The safe account receives funds; nothing is ever sent back from it.
+
+The entire discipline is a single policy, signed once by the owner:
+
+| Element | Value used in the simulation | Purpose |
+|---|---|---|
+| Destination | One safe account on Base | The only address funds may ever reach |
+| Cap | Exactly the principal, per transaction | Bounds the exit itself |
+| Delay | 30 s timelock (1 h in production) | Gives the owner a veto window before the principal leaves |
+
+The policy permits `withdraw` only, so no route exists from the safe account back to the agent.
+
+## How it works
+
+1. The owner signs the policy once and issues one revocable grant to the runner. A grant carries no
+   permissions of its own; the policy is the sole authority.
+2. On each tick the runner reads the agent's balances and prices them from the token catalog. A
+   missing or stale price halts the tick (`spend_price_unavailable`); the runner never acts on an
+   estimated value.
+3. When equity reaches 2x the principal, the runner withdraws exactly the principal under the fixed
+   idempotency key `principal:<agentId>`. It submits the withdrawal first and persists the `banked`
+   flag second, so a crash between the two replays the same request instead of paying twice.
+4. The withdrawal is queued for the timelock duration. The owner may cancel it during that window.
+5. Once the exit settles, the runner only reports status. Optionally, it can seal the policy (see
+   [Known limitations](#known-limitations)).
+
+On the real Agent API this corresponds to a `policy_update` (a single `only` destination, a
+per-transaction cap equal to the principal, and `timelock_ms`), a `grant_issue` for the strategy,
+and a grant-scoped `withdraw` carrying an idempotency key.
+
+## Safety model
+
+Every refusal below is produced by the policy layer and is exercised by `runRefusalMatrix` (the
+Safety page, `npm run simulate` and the test suite).
+
+| Attempt | Refused with |
+|---|---|
+| Transfer out of the agent ("return my money") | `policy_action_denied` |
+| Withdraw to another address, chain or memo | `policy_destination_denied` |
+| Withdraw an asset outside the allowlist | `policy_denied` |
+| Withdraw more than the principal in one transaction | `policy_limit_exceeded` |
+| Replay the principal exit with the same key | Original operation returned; no second withdrawal |
+| Use a revoked grant | `agent_grant_required` |
+| Exceed the hourly action limit | `policy_action_limit_exceeded` |
+
+Error codes follow the Agent API's published error list. The API does not specify the code for an
+unlisted asset or a revoked grant, so `policy_denied` and `agent_grant_required` are inferred and
+should be confirmed during the first live run.
+
+The mock also reproduces two behaviours of the real service: a 10-minute cooldown between ordinary
+policy edits (a pure freeze bypasses it), and rejection of a reused idempotency key accompanied by a
+different request body (`idempotency_conflict`).
+
+## Getting started
+
+Requirements: Node.js 22 or later. The real SDK requires Node.js 24 or later; the mock does not.
+
+```sh
+npm install
+npm run dev
+```
+
+Open <http://localhost:3000>. To autoplay the full run at 12x speed, open
+<http://localhost:3000/dashboard?auto>.
+
+For a production build:
+
+```sh
+npm run build
+npm start
+```
+
+The accent colour is a single design token, `--accent` in `src/app/globals.css`.
+
+## Scripts
+
+| Script | Description |
+|---|---|
+| `npm run dev`, `build`, `start` | Standard Next.js development, build and production server |
+| `npm run check` | Generates Next.js route types, typechecks, then runs all 58 tests |
+| `npm test` | Unit tests only (`src/lib/**/*.test.ts`) |
+| `npm run simulate` | Plays the whole story headless and verifies the outcome and the refusal matrix. Add `-- --realtime` for the 55 s live pacing. Exits non-zero on any failure |
+| `npm run live:check` | Read-only check of the real Agent API: network status, token catalog, runner pricing on live data, and the API key if set. Moves no funds |
+| `npm run e2e` | Starts the production server and drives Chrome through every page and button. Run `npm run build` first |
+
+## Project structure
+
+```
+.
+├── package.json  tsconfig.json  next.config.ts  postcss.config.mjs
+├── scripts/
+│   ├── simulate.mts        Headless run of the full scenario
+│   ├── live-check.mts      Read-only check of the real Agent API
+│   └── e2e.mts             Browser test (Playwright, system Chrome)
+└── src/
+    ├── app/                Routes: landing, live simulation, policy, safety, events
+    ├── components/         Sidebar, panels, chart, simulation provider and controls
+    └── lib/
+        ├── policy/         Policy builder and Agent API types
+        ├── risk/           Fail-closed pricing, principal trigger, idempotency key
+        ├── agent-api/      Client interfaces, policy-enforcing mock, real-API client
+        ├── runner/         Strategy loop, persisted state, typed event log
+        └── simulation/     Deterministic strategy, steppable scenario, refusal matrix
+```
+
+Unit tests are colocated with the code they cover (`*.test.ts`).
+
+## Testing
+
+| Layer | Command | Coverage |
+|---|---|---|
+| Unit and integration | `npm test` | Policy, pricing, trigger, mock enforcement, runner behaviour, real-API client (through the real SDK against a fake network), simulation, refusal matrix |
+| Static | `npm run typecheck` | TypeScript strict mode, including Next.js route types |
+| Headless scenario | `npm run simulate` | Equity doubles, the principal exits exactly once, the red day burns only house money, nine refusal checks hold |
+| Browser | `npm run e2e` | 21 checks in Chrome: autoplay, all pages, every button, the owner veto, reset, theme colour |
+| Live read-only | `npm run live:check` | Real network status and token catalog; verifies the runner's pricing against live prices |
+
+## Demonstration
+
+A complete run takes about 55 seconds. Present the UI, and keep `npm run simulate -- --realtime`
+as a terminal fallback.
+
+| Time | Screen | Event |
+|---|---|---|
+| 0 to 5 s | Signed Policy | One destination, one cap, one delay |
+| 5 to 20 s | Live Simulation | Equity climbs toward 2x; the runner prices the portfolio each step |
+| 20 s | Live Simulation | Equity reaches the 2x line; the principal exit is queued with a countdown |
+| 20 to 30 s | Live Simulation | A red day reduces equity; the countdown continues and the owner may veto |
+| 50 s | Live Simulation | The principal settles; the banked line never moves again |
+| After | Try to Break It | Run all checks: all nine refusals hold |
+
+## Known limitations
+
+- **Exactly-once is enforced by the runner, not by the policy, unless the seal is enabled.** The
+  per-transaction cap remains at the principal, so a second exit under a different idempotency key
+  would be policy-legal, though only to the safe account. Setting `sealAfterSettlement: true` on the
+  runner closes this: once the exit settles, an owner-signed `policy_update` removes `withdraw`, and
+  retries when the API's 10-minute edit cooldown defers it. The option is off by default because it
+  departs from the original specification.
+- **Drawdown during the veto window.** The principal leaves when the timelock releases and requires
+  sufficient balance at that moment. A loss of roughly half the position inside the window can cause
+  the exit to fail with `insufficient_balance`. A test documents this case.
+- **Simulated gains.** The live service is mainnet-only and offers no test network, so gains cannot be
+  simulated against it.
+- **Live client not yet run against the service.** It is tested through the real SDK against a fake
+  network. The mock does not model `confidential`, `owner_approval` or USD budgets.
+
+## Going live
+
+`LiveAgentApi` (`src/lib/agent-api/live.ts`) implements the same interfaces as the mock on top of
+`@near-intents-agent-api/sdk`, so the runner and simulation need no changes. What remains is supplying
+inputs:
+
+1. **API key.** Create a `naa_...` key in the partner dashboard and export it as
+   `NEAR_INTENTS_AGENT_API_KEY`. `npm run live:check` validates it without moving funds.
+2. **Owner signer.** A dedicated NEAR owner account holding little value, and an `OwnerSigner`
+   implementation for it. The signer returns the wallet's signature for `generated.intent`; see the
+   SDK documentation on signing. The SDK ships no signers.
+3. **Funding.** A small USDC stake in the agent, and a safe-account address on Base.
+4. **Runtime.** Node.js 24 or later.
+5. **Approval to transact.** The hosted API runs on mainnet with real funds.
+
+Use asset identifiers from `GET /v1/tokens`. For example, NEAR-chain USDC is
+`nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`. A live run demonstrates the
+withdrawal, the timelock and the refusals, using a lowered trigger multiple, since gains cannot be
+simulated on mainnet.
