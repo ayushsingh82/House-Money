@@ -1,5 +1,14 @@
+# dependencies
 node_modules/
+
+# next.js
 .next/
+next-env.d.ts
+*.tsbuildinfo
+
+# misc
 .env
 .DS_Store
-docs/reference/
+
+# Local notes, plan, findings, media and reference clones: kept on this machine, not published.
+docs/
