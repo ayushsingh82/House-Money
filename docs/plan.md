@@ -34,18 +34,25 @@ implementing the same policy checks, swap in the real client later (see §5).
 ## 3. Architecture
 
 ```
-house-memory/demo/
-  packages/
-    core/          policy builder, trigger logic, pricing, idempotency key, types
-    agent-client/  AgentApi wrapper (real) + MockAgentApi (same interface)
-  apps/
-    runner/        strategy loop: price -> check trigger -> withdraw once
-    web/           dashboard (Next.js or Vite + React)
-  scripts/
-    setup.ts       create agent, sign policy, issue grant, fund
-    demo.ts        scripted 60s run (inject gains, fast-forward timelock)
-    reset.ts       tear down / recreate for repeat runs
+house-memory/
+  README.md
+  docs/                   spec, this plan, phase 0 findings, fallback recording
+  app/                    the one Next.js project (Tailwind v4, Orca-style UI, orange accent)
+    src/app/              routes: landing, and the app (live simulation, policy, safety, events)
+    src/components/       sidebar, panels, chart, simulation provider and controls
+    src/lib/
+      policy/             policy builder and Agent API types
+      risk/               fail-closed pricing, principal trigger, idempotency key
+      agent-api/          client interfaces + MockAgentApi (same surface as the real SDK)
+      runner/             strategy loop: price -> trigger -> withdraw once; state store; events
+      simulation/         deterministic strategy, steppable scenario, refusal matrix
+    scripts/
+      simulate.mts        headless run of the full story (npm run simulate)
 ```
+
+(Originally planned as `packages/` + `apps/`; consolidated into one Next.js app. `setup.ts` and
+`reset.ts` for the live API remain to be written in Phase 0.)
+
 
 Data flow:
 1. `setup.ts` → `policy_update` (signed by owner) → `grant_issue` (credential commitment).
@@ -64,7 +71,7 @@ Data flow:
 - [ ] Sign a minimal `policy_update`, issue a grant, perform one tiny withdraw to the safe account
 - [ ] Answer §2 questions; record answers in this file
 
-### Phase 1 — Core logic (`packages/core`)
+### Phase 1 — Core logic (`app/src/lib/policy`, `app/src/lib/risk`)
 - [ ] `buildHouseMoneyPolicy({ agentId, revision, principalAtomic, safeAddress, chain, timelockMs })`
       returning the exact policy from the spec (single destination `mode: "only"`, per-tx cap =
       principal, `actions: ["withdraw"]`, `max_actions_per_hour: 5`, null budgets)
@@ -76,14 +83,14 @@ Data flow:
 - [ ] Unit tests: threshold edges (just below / exactly / above 2x), stale price, already banked,
       decimals/atomic conversion
 
-### Phase 2 — Agent client (`packages/agent-client`)
+### Phase 2 — Agent client (`app/src/lib/agent-api`)
 - [ ] Typed wrapper around `AgentApi`: `applyPolicy`, `issueGrant`, `getEquity`, `withdraw`,
       `getWithdrawalStatus`, `cancelWithdrawal`
 - [ ] `MockAgentApi` enforcing the same rules locally: destination allowlist, per-tx cap,
       hourly rate, idempotency replay, timelock queue with a controllable clock
 - [ ] Contract tests run against both implementations
 
-### Phase 3 — Runner (`apps/runner`)
+### Phase 3 — Runner (`app/src/lib/runner`)
 - [ ] Loop with backoff; reads config from env (`NAA_KEY`, `API_ORIGIN`, agent id, grant token)
 - [ ] Persist `{ banked, withdrawalId, bankedAt }` to a small local store (JSON/SQLite) so a
       restart can't re-trigger; idempotency key is the second line of defence
@@ -97,7 +104,7 @@ Data flow:
 - [ ] Configurable timelock for the demo (e.g. 20–30s) with a note that production uses 1h
 - [ ] Clock control in mock mode to fast-forward the countdown
 
-### Phase 5 — Dashboard (`apps/web`)
+### Phase 5 — Dashboard (`app/src/app`, `app/src/components`)
 - [ ] Equity chart with a horizontal **principal line** and a 2x trigger marker
 - [ ] Two-bucket bar: **Banked (safe account)** vs. **House money (at risk)**
 - [ ] Countdown card for the queued withdrawal (amount, destination, `executes_at`, Cancel button)

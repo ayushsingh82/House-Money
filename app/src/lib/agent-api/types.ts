@@ -1,4 +1,4 @@
-import type { Balances, Policy, TokenInfo, WithdrawRequest } from "../core/types.js";
+import type { Balances, Policy, TokenInfo, WithdrawRequest } from "@/lib/policy/types";
 
 export type OpStatus = "QUEUED" | "PROCESSING" | "SUCCESS" | "FAILED" | "CANCELLED";
 
@@ -16,7 +16,7 @@ export type Operation = {
 export interface GrantClient {
   getBalances(agentId: string): Promise<{ balances: Balances }>;
   withdraw(agentId: string, req: WithdrawRequest, opts: { idempotencyKey: string }): Promise<Operation>;
-  /** Present so the demo can show it refused when the policy omits "transfer". */
+  /** Present so the simulation can show it refused when the policy omits "transfer". */
   transfer(agentId: string, req: { asset: string; amount: string; recipient: string }): Promise<Operation>;
 }
 

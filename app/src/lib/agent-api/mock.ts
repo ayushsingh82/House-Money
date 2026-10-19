@@ -1,6 +1,6 @@
-import { AgentApiError } from "../core/errors.js";
-import type { Balances, Policy, TokenInfo, WithdrawRequest } from "../core/types.js";
-import type { AgentClient, GrantClient, Operation } from "./types.js";
+import { AgentApiError } from "@/lib/errors";
+import type { Balances, Policy, TokenInfo, WithdrawRequest } from "@/lib/policy/types";
+import type { AgentClient, GrantClient, Operation } from "@/lib/agent-api/types";
 
 type Grant = { agentId: string; label: string; expiresAt: number; revoked: boolean };
 type Agent = {
@@ -10,7 +10,7 @@ type Agent = {
   actionTimes: number[];
 };
 
-/** Controllable clock so the 1h timelock can be fast-forwarded in a demo or test. */
+/** Controllable clock so the 1h timelock can be fast-forwarded in a simulation or test. */
 export class MockClock {
   constructor(private t = Date.now()) {}
   now() {
@@ -22,7 +22,7 @@ export class MockClock {
 }
 
 /**
- * Local stand-in for the Agent API. Enforces the same policy layers the demo relies on:
+ * Local stand-in for the Agent API. Enforces the same policy layers the simulation relies on:
  * grant validity, frozen, action allowlist, asset allowlist, destination allowlist,
  * per-transaction cap, hourly rate, balance, timelock queue, and idempotent replay.
  */
@@ -44,7 +44,7 @@ export class MockAgentApi implements AgentClient {
     this.clock = clock;
   }
 
-  // ---- test / demo controls -------------------------------------------------
+  // ---- test / simulation controls -------------------------------------------------
 
   createAgent(agentId: string, balances: Record<string, bigint> = {}, policy: Policy | null = null) {
     this.agents.set(agentId, {

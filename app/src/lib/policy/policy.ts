@@ -1,4 +1,4 @@
-import type { Policy } from "./types.js";
+import type { Policy } from "@/lib/policy/types";
 
 export type HouseMoneyPolicyInput = {
   /** Asset id from GET /v1/tokens. */

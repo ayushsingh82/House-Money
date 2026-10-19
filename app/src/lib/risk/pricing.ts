@@ -1,5 +1,5 @@
-import { PriceUnavailableError } from "./errors.js";
-import type { Balances, TokenInfo } from "./types.js";
+import { PriceUnavailableError } from "@/lib/errors";
+import type { Balances, TokenInfo } from "@/lib/policy/types";
 
 /** USD amounts are carried as micro-USD (1e-6) bigints to avoid float drift. */
 export const MICRO = 1_000_000n;

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { MockAgentApi } from "../src/client/index.js";
-import { AgentApiError, buildHouseMoneyPolicy, principalKey } from "../src/core/index.js";
+import { MockAgentApi } from "@/lib/agent-api/mock";
+import { AgentApiError } from "@/lib/errors";
+import { buildHouseMoneyPolicy } from "@/lib/policy/policy";
+import { principalKey } from "@/lib/risk/trigger";
 
 const USDC = "nep141:usdc-test";
 const SAFE = "0xsafe";

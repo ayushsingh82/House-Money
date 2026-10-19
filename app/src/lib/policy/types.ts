@@ -1,4 +1,4 @@
-/** Structural subset of the Agent API types used by the demo (matches @near-intents-agent-api/sdk). */
+/** Structural subset of the Agent API types used by the simulation (matches @near-intents-agent-api/sdk). */
 
 export type Destination = {
   action: "withdraw" | "transfer";
