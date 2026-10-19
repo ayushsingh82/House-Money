@@ -13,7 +13,7 @@ strategy can reach it.
 |---|---|
 | **Stack** | Next.js (App Router), React, Tailwind CSS v4, TypeScript |
 | **Integration** | `@near-intents-agent-api/sdk` (real client) and a policy-enforcing mock |
-| **Verification** | 58 unit tests, a 21-check browser test, a headless end-to-end simulation |
+| **Verification** | 58 unit tests, a 19-check browser test, a headless end-to-end simulation |
 | **Status** | Complete on the mock. Live mainnet run pending credentials and funds (see [Going live](#going-live)) |
 
 ## Contents
@@ -90,7 +90,7 @@ different request body (`idempotency_conflict`).
 
 ## Getting started
 
-Requirements: Node.js 22 or later. The real SDK requires Node.js 24 or later; the mock does not.
+Requirements: Node.js 22 or later (verified on Node.js 23). The real SDK requires Node.js 24 or later; the mock does not.
 
 ```sh
 npm install
@@ -149,7 +149,7 @@ Unit tests are colocated with the code they cover (`*.test.ts`).
 | Unit and integration | `npm test` | Policy, pricing, trigger, mock enforcement, runner behaviour, real-API client (through the real SDK against a fake network), simulation, refusal matrix |
 | Static | `npm run typecheck` | TypeScript strict mode, including Next.js route types |
 | Headless scenario | `npm run simulate` | Equity doubles, the principal exits exactly once, the red day burns only house money, nine refusal checks hold |
-| Browser | `npm run e2e` | 21 checks in Chrome: autoplay, all pages, every button, the owner veto, reset, theme colour |
+| Browser | `npm run e2e` | 19 checks in Chrome: autoplay, all pages, every button, the owner veto, reset, theme colour |
 | Live read-only | `npm run live:check` | Real network status and token catalog; verifies the runner's pricing against live prices |
 
 ## Demonstration
