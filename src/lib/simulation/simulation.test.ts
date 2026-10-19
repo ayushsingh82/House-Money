@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { applyStep, buildScenario } from "@/lib/simulation/strategy";
-import { SIM_ASSET, SIM_AGENT, runHouseMoneyScenario } from "@/lib/simulation/scenario";
+import { SIM_ASSET, SIM_AGENT, SIM_SAFE, runHouseMoneyScenario } from "@/lib/simulation/scenario";
 
 describe("strategy", () => {
   it("gain steps sum to exactly the target gain", () => {
@@ -65,3 +65,17 @@ describe("house-money scenario (mock, full story)", () => {
     );
   });
 });
+
+describe("house-money scenario with the post-bank seal", () => {
+  it("seals the policy once the exit settles, so a second exit is impossible even with a new key", async () => {
+    const { api, log } = await runHouseMoneyScenario({ sealAfterSettlement: true });
+    assert.equal(log.ofType("withdraw_settled").length, 1);
+    assert.equal(log.ofType("policy_sealed").length, 1);
+    const { token } = await api.issueGrant(SIM_AGENT, "post", new Date(api.clock.now() + 1000));
+    await assert.rejects(
+      api.forGrant(token).withdraw(SIM_AGENT, { asset: SIM_ASSET, amount: "1", chain: "base", recipient: SIM_SAFE }, { idempotencyKey: "second-exit" }),
+      /policy_action_denied/,
+    );
+  });
+});
+

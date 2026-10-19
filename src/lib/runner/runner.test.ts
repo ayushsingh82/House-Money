@@ -3,10 +3,10 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { MockAgentApi } from "@/lib/agent-api/mock";
+import { MockAgentApi, POLICY_COOLDOWN_MS } from "@/lib/agent-api/mock";
 import { buildHouseMoneyPolicy } from "@/lib/policy/policy";
 import { FileStateStore } from "@/lib/runner/file-store";
-import { HouseMoneyRunner } from "@/lib/runner/runner";
+import { HouseMoneyRunner, type RunnerConfig } from "@/lib/runner/runner";
 import { MemoryStateStore, type StateStore } from "@/lib/runner/store";
 
 const ASSET = "nep141:usdc-test";
@@ -31,11 +31,11 @@ async function setup(balance = P, expiresInMs = 600_000) {
   );
   const { token } = await api.issueGrant(AGENT, "r", new Date(api.clock.now() + 86_400_000));
   const store = new MemoryStateStore();
-  const make = (s: StateStore = store) =>
+  const make = (s: StateStore = store, extra: Partial<RunnerConfig> = {}) =>
     new HouseMoneyRunner({
       client: api, grant: api.forGrant(token), agentId: AGENT, asset: ASSET,
       principalAtomic: P, principalMicroUsd: P, chain: "base", safeAddress: SAFE,
-      store: s, now: () => api.clock.date(),
+      store: s, now: () => api.clock.date(), ...extra,
     });
   return { api, make, store };
 }
@@ -111,7 +111,7 @@ describe("HouseMoneyRunner", () => {
     await api.updatePolicy(AGENT, { ...policy!, frozen: true }, revision!);
     const r = make();
     await r.tick();
-    assert.deepEqual(r.log.ofType("refused").map((e) => e.code), ["agent_frozen"]);
+    assert.deepEqual(r.log.ofType("refused").map((e) => e.code), ["wallet_frozen"]);
     assert.equal((await store.load()).banked, false);
   });
 
@@ -142,5 +142,54 @@ describe("HouseMoneyRunner", () => {
     await done;
     assert.ok(calls >= 2);
     assert.equal(r.log.ofType("error").length, 1);
+  });
+});
+
+describe("HouseMoneyRunner post-bank seal (opt-in)", () => {
+  const SAFE_REQ = { asset: ASSET, amount: "1", chain: "base", recipient: SAFE };
+
+  it("is off by default: after settlement a new key can still withdraw to the safe account", async () => {
+    const { api, make } = await setup(2n * P);
+    const r = make();
+    await r.tick();
+    api.advance(10_000);
+    await r.tick();
+    assert.equal(r.log.ofType("policy_sealed").length, 0);
+    const { token } = await api.issueGrant(AGENT, "x", new Date(api.clock.now() + 1000));
+    const op = await api.forGrant(token).withdraw(AGENT, SAFE_REQ, { idempotencyKey: "fresh" });
+    assert.equal(op.status, "QUEUED");
+  });
+
+  it("drops withdraw after settlement, waiting out the 10-minute edit cooldown", async () => {
+    const { api, make } = await setup(2n * P);
+    const r = make(undefined, { sealAfterSettlement: true });
+    await r.tick();
+    api.advance(10_000);
+    await r.tick(); // settled; the policy was edited moments ago, so the seal is deferred
+    assert.deepEqual(r.log.ofType("seal_deferred").map((e) => e.code), ["policy_change_throttled"]);
+    assert.equal(r.log.ofType("policy_sealed").length, 0);
+
+    api.advance(POLICY_COOLDOWN_MS);
+    await r.tick();
+    assert.equal(r.log.ofType("policy_sealed").length, 1);
+    await r.tick();
+    await r.tick();
+    assert.equal(r.log.ofType("policy_sealed").length, 1, "sealed once");
+
+    const { token } = await api.issueGrant(AGENT, "x", new Date(api.clock.now() + 1000));
+    await assert.rejects(api.forGrant(token).withdraw(AGENT, SAFE_REQ, { idempotencyKey: "fresh" }), (e) => (e as { code?: string }).code === "policy_action_denied");
+  });
+
+  it("does not seal when the exit was cancelled (the principal is still in the agent)", async () => {
+    const { api, make } = await setup(2n * P);
+    const r = make(undefined, { sealAfterSettlement: true });
+    await r.tick();
+    const [op] = await api.listScheduledExecutions(AGENT);
+    await api.cancelExecution(AGENT, op!.correlation_id);
+    api.advance(POLICY_COOLDOWN_MS);
+    await r.tick();
+    await r.tick();
+    assert.equal(r.log.ofType("policy_sealed").length, 0);
+    assert.equal(r.log.ofType("seal_deferred").length, 0);
   });
 });

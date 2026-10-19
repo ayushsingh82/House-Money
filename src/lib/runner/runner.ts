@@ -1,12 +1,13 @@
 import type { AgentClient, GrantClient } from "@/lib/agent-api/types";
 import { AgentApiError, PriceUnavailableError } from "@/lib/errors";
+import { buildSealedPolicy } from "@/lib/policy/policy";
 import { portfolioValueMicroUsd } from "@/lib/risk/pricing";
 import { principalKey, shouldBankPrincipal } from "@/lib/risk/trigger";
 import { EventLog } from "@/lib/runner/events";
 import type { StateStore } from "@/lib/runner/store";
 
 export type RunnerConfig = {
-  client: Pick<AgentClient, "getTokens" | "getStatus">;
+  client: Pick<AgentClient, "getTokens" | "getStatus" | "getPolicy" | "updatePolicy">;
   grant: GrantClient;
   agentId: string;
   asset: string;
@@ -21,6 +22,11 @@ export type RunnerConfig = {
   now?: () => Date;
   /** Equity/principal ratio that triggers banking. 2 = gains equal principal. */
   multiple?: bigint;
+  /**
+   * After the exit settles, update the policy to drop `withdraw` so no grant can withdraw again.
+   * Off by default: it is an owner-signed policy change and departs from the original spec.
+   */
+  sealAfterSettlement?: boolean;
 };
 
 export class HouseMoneyRunner {
@@ -80,14 +86,37 @@ export class HouseMoneyRunner {
   }
 
   private async reportSettlement(state: Awaited<ReturnType<StateStore["load"]>>) {
-    if (state.settledReported || !state.withdrawalId) return;
-    const op = await this.cfg.client.getStatus(state.withdrawalId);
-    if (op.status === "SUCCESS") {
-      this.log.emit({ type: "withdraw_settled", at: this.at(), correlationId: op.correlation_id });
-      await this.cfg.store.save({ ...state, settledReported: true });
-    } else if (op.status === "FAILED" || op.status === "CANCELLED") {
-      this.log.emit({ type: "withdraw_failed", at: this.at(), correlationId: op.correlation_id, failureCode: op.failure_code ?? op.status });
-      await this.cfg.store.save({ ...state, settledReported: true });
+    if (!state.settledReported && state.withdrawalId) {
+      const op = await this.cfg.client.getStatus(state.withdrawalId);
+      if (op.status === "SUCCESS") {
+        this.log.emit({ type: "withdraw_settled", at: this.at(), correlationId: op.correlation_id });
+        state = { ...state, settledReported: true, exitSettled: true };
+      } else if (op.status === "FAILED" || op.status === "CANCELLED") {
+        this.log.emit({ type: "withdraw_failed", at: this.at(), correlationId: op.correlation_id, failureCode: op.failure_code ?? op.status });
+        state = { ...state, settledReported: true };
+      } else {
+        return;
+      }
+      await this.cfg.store.save(state);
+    }
+    if (this.cfg.sealAfterSettlement && state.exitSettled && !state.sealed) await this.seal(state);
+  }
+
+  /** Retried on later ticks when the API's 10-minute policy-change cooldown refuses it. */
+  private async seal(state: Awaited<ReturnType<StateStore["load"]>>) {
+    try {
+      const { policy, revision } = await this.cfg.client.getPolicy(this.cfg.agentId);
+      if (policy && revision !== null && policy.actions.includes("withdraw")) {
+        const next = await this.cfg.client.updatePolicy(this.cfg.agentId, buildSealedPolicy(policy), revision);
+        this.log.emit({ type: "policy_sealed", at: this.at(), revision: next.revision });
+      }
+      await this.cfg.store.save({ ...state, sealed: true });
+    } catch (e) {
+      if (e instanceof AgentApiError) {
+        this.log.emit({ type: "seal_deferred", at: this.at(), code: e.code });
+        return;
+      }
+      throw e;
     }
   }
 

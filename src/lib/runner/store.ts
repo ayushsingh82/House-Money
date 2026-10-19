@@ -5,6 +5,10 @@ export type RunnerState = {
   bankedAt?: string;
   /** True once the withdrawal's settlement event was emitted. */
   settledReported?: boolean;
+  /** True once the exit actually settled (not failed or cancelled). */
+  exitSettled?: boolean;
+  /** True once the post-bank policy update removed `withdraw`. */
+  sealed?: boolean;
 };
 
 export interface StateStore {

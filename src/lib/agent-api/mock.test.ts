@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { MockAgentApi } from "@/lib/agent-api/mock";
+import { MockAgentApi, POLICY_COOLDOWN_MS } from "@/lib/agent-api/mock";
 import { AgentApiError } from "@/lib/errors";
 import { buildHouseMoneyPolicy } from "@/lib/policy/policy";
 import { principalKey } from "@/lib/risk/trigger";
@@ -55,7 +55,7 @@ describe("MockAgentApi policy enforcement", () => {
   });
 
   it("refuses assets outside the allowlist", async () => {
-    await assert.rejects(house.withdraw(AGENT, req({ asset: "nep141:other" }), { idempotencyKey: "k" }), code("policy_asset_denied"));
+    await assert.rejects(house.withdraw(AGENT, req({ asset: "nep141:other" }), { idempotencyKey: "k" }), code("policy_denied"));
   });
 
   it("replays an identical idempotency key without a second withdrawal", async () => {
@@ -68,7 +68,7 @@ describe("MockAgentApi policy enforcement", () => {
 
   it("rate-limits the 6th action within an hour", async () => {
     for (let i = 0; i < 5; i++) await house.withdraw(AGENT, req({ amount: "1" }), { idempotencyKey: `k${i}` });
-    await assert.rejects(house.withdraw(AGENT, req({ amount: "1" }), { idempotencyKey: "k5" }), code("policy_rate_limited"));
+    await assert.rejects(house.withdraw(AGENT, req({ amount: "1" }), { idempotencyKey: "k5" }), code("policy_action_limit_exceeded"));
     api.advance(HOUR + 1);
     await house.withdraw(AGENT, req({ amount: "1" }), { idempotencyKey: "k6" });
   });
@@ -100,17 +100,30 @@ describe("MockAgentApi policy enforcement", () => {
     const { token } = await api.issueGrant(AGENT, "tmp", new Date(api.clock.now() + 1000));
     const g = api.forGrant(token);
     await api.revokeGrant(AGENT, token);
-    await assert.rejects(g.getBalances(AGENT), code("grant_revoked"));
+    await assert.rejects(g.getBalances(AGENT), code("agent_grant_required"));
 
     const { token: t2 } = await api.issueGrant(AGENT, "tmp2", new Date(api.clock.now() + 1000));
     api.advance(1001);
-    await assert.rejects(api.forGrant(t2).getBalances(AGENT), code("grant_expired"));
-    await assert.rejects(api.forGrant("ngt_bogus").getBalances(AGENT), code("grant_invalid"));
+    await assert.rejects(api.forGrant(t2).getBalances(AGENT), code("agent_grant_required"));
+    await assert.rejects(api.forGrant("ngt_bogus").getBalances(AGENT), code("agent_grant_required"));
   });
 
   it("guards policy edits with expected_revision", async () => {
     await assert.rejects(api.updatePolicy(AGENT, policy(), 0), code("policy_revision_conflict"));
     assert.deepEqual(await api.updatePolicy(AGENT, policy({ frozen: true }), 1), { revision: 2 });
-    await assert.rejects(house.withdraw(AGENT, req(), { idempotencyKey: "k" }), code("agent_frozen"));
+    await assert.rejects(house.withdraw(AGENT, req(), { idempotencyKey: "k" }), code("wallet_frozen"));
+  });
+  it("refuses the same idempotency key with a different request body", async () => {
+    await house.withdraw(AGENT, req({ amount: "5" }), { idempotencyKey: "k" });
+    await assert.rejects(house.withdraw(AGENT, req({ amount: "6" }), { idempotencyKey: "k" }), code("idempotency_conflict"));
+  });
+
+  it("throttles ordinary policy edits for 10 minutes but lets a pure freeze through", async () => {
+    const { policy, revision } = await api.getPolicy(AGENT);
+    await assert.rejects(api.updatePolicy(AGENT, { ...policy!, timelock_ms: 1 }, revision!), code("policy_change_throttled"));
+    api.advance(POLICY_COOLDOWN_MS);
+    const { revision: next } = await api.updatePolicy(AGENT, { ...policy!, timelock_ms: 1 }, revision!);
+    await api.updatePolicy(AGENT, { ...(await api.getPolicy(AGENT)).policy!, frozen: true }, next);
+    await assert.rejects(house.withdraw(AGENT, req(), { idempotencyKey: "k" }), code("wallet_frozen"));
   });
 });

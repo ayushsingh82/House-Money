@@ -13,6 +13,8 @@ function describe(e: RunnerEvent, principal: bigint, timelockSec: number): Line 
     case "withdraw_settled": return { text: "Principal settled to the safe account.", tone: "good" };
     case "withdraw_failed": return { text: `Exit did not settle (${e.failureCode}).`, tone: "bad" };
     case "refused": return { text: `Refused: ${e.code}`, tone: "bad" };
+    case "policy_sealed": return { text: "Policy sealed: withdraw removed. No grant can withdraw again.", tone: "good" };
+    case "seal_deferred": return { text: `Policy seal deferred (${e.code}). Retrying.`, tone: "default" };
     case "price_unavailable": return { text: "Price unavailable. Failing closed.", tone: "bad" };
     case "error": return { text: e.message, tone: "bad" };
     default: return null; // ticks feed the chart, not the log

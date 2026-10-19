@@ -32,6 +32,8 @@ export type ScenarioOptions = {
   /** Simulation timelock; production is 3_600_000. */
   timelockMs?: number;
   store?: StateStore;
+  /** Drop `withdraw` from the policy once the exit settles (closes the exactly-once gap). */
+  sealAfterSettlement?: boolean;
   /** Steps to run after the red day so the countdown can finish. */
   tailSteps?: number;
 };
@@ -90,11 +92,11 @@ export class HouseMoneySimulation {
   async init() {
     const { api, principalAtomic: principal } = this;
     api.setTokens([fresh(api.clock.date())]);
-    api.createAgent(SIM_AGENT, { [SIM_ASSET]: principal });
-    await api.updatePolicy(
+    // The policy is already in force when the run starts (applied long before, outside the 10-minute edit cooldown).
+    api.createAgent(
       SIM_AGENT,
+      { [SIM_ASSET]: principal },
       buildHouseMoneyPolicy({ asset: SIM_ASSET, principalAtomic: principal, chain: "base", safeAddress: SIM_SAFE, timelockMs: this.timelockMs }),
-      0,
     );
     this.token = (await api.issueGrant(SIM_AGENT, "house-money:runner", new Date(api.clock.now() + 86_400_000))).token;
     this.runner = new HouseMoneyRunner({
@@ -107,6 +109,7 @@ export class HouseMoneySimulation {
       chain: "base",
       safeAddress: SIM_SAFE,
       store: this.store,
+      sealAfterSettlement: this.opts.sealAfterSettlement,
       log: this.log,
       now: () => api.clock.date(),
     });

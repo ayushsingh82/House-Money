@@ -53,7 +53,7 @@ export async function runRefusalMatrix(s: HouseMoneySimulation): Promise<Refusal
   check("memo", "Withdraw with an unlisted memo", "policy_destination_denied",
     await code(() => withdraw({ memo: "sneaky" }, "m-memo")));
 
-  check("other-asset", "Withdraw an asset outside the allowlist", "policy_asset_denied",
+  check("other-asset", "Withdraw an asset outside the allowlist", "policy_denied",
     await code(() => withdraw({ asset: "nep141:other" }, "m-asset")));
 
   check("over-cap", "Withdraw principal + 1", "policy_limit_exceeded",
@@ -73,16 +73,16 @@ export async function runRefusalMatrix(s: HouseMoneySimulation): Promise<Refusal
 
   const { token } = await s.api.issueGrant(SIM_AGENT, "matrix-revoked", new Date(s.api.clock.now() + 60_000));
   await s.api.revokeGrant(SIM_AGENT, token);
-  check("revoked", "Use a revoked grant", "grant_revoked",
+  check("revoked", "Use a revoked grant", "agent_grant_required",
     await code(() => s.api.forGrant(token).getBalances(SIM_AGENT)));
 
   let rate = "never-limited";
   for (let i = 0; i < 10; i++) {
     const r = await code(() => withdraw({ amount: "1" }, `m-rate-${i}`));
-    if (r === "policy_rate_limited") { rate = r; break; }
+    if (r === "policy_action_limit_exceeded") { rate = r; break; }
     if (r !== "allowed" && r !== "insufficient_balance") { rate = r; break; }
   }
-  check("rate", "Exceed 5 actions in an hour", "policy_rate_limited", rate);
+  check("rate", "Exceed 5 actions in an hour", "policy_action_limit_exceeded", rate);
 
   return out;
 }

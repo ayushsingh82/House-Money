@@ -2,12 +2,17 @@ import { AgentApiError } from "@/lib/errors";
 import type { Balances, Policy, TokenInfo, WithdrawRequest } from "@/lib/policy/types";
 import type { AgentClient, GrantClient, Operation } from "@/lib/agent-api/types";
 
+/** Ordinary policy edits are at least this far apart on the real API; a pure freeze bypasses it. */
+export const POLICY_COOLDOWN_MS = 600_000;
+
 type Grant = { agentId: string; label: string; expiresAt: number; revoked: boolean };
 type Agent = {
   balances: Map<string, bigint>;
   policy: Policy | null;
   revision: number | null;
   actionTimes: number[];
+  /** When the last non-freeze policy edit was applied (10-minute cooldown). */
+  lastPolicyChangeAt: number | null;
 };
 
 /** Controllable clock so the 1h timelock can be fast-forwarded in a simulation or test. */
@@ -31,7 +36,7 @@ export class MockAgentApi implements AgentClient {
   private agents = new Map<string, Agent>();
   private grants = new Map<string, Grant>();
   private ops = new Map<string, Operation>();
-  private byKey = new Map<string, Operation>();
+  private byKey = new Map<string, { op: Operation; fingerprint: string }>();
   private opAgent = new Map<string, string>();
   /** Settled withdrawals, newest last (for the dashboard and assertions). */
   readonly settled: Operation[] = [];
@@ -52,6 +57,7 @@ export class MockAgentApi implements AgentClient {
       policy,
       revision: policy ? 1 : null,
       actionTimes: [],
+      lastPolicyChangeAt: null,
     });
   }
 
@@ -83,6 +89,10 @@ export class MockAgentApi implements AgentClient {
   async updatePolicy(agentId: string, policy: Policy, expectedRevision: number) {
     const a = this.agent(agentId);
     if ((a.revision ?? 0) !== expectedRevision) throw new AgentApiError("policy_revision_conflict", undefined, 409);
+    const pureFreeze = a.policy !== null && !a.policy.frozen && policy.frozen && JSON.stringify({ ...a.policy, frozen: true }) === JSON.stringify(policy);
+    if (!pureFreeze && a.lastPolicyChangeAt !== null && this.clock.now() - a.lastPolicyChangeAt < POLICY_COOLDOWN_MS)
+      throw new AgentApiError("policy_change_throttled", undefined, 429);
+    if (!pureFreeze) a.lastPolicyChangeAt = this.clock.now();
     a.policy = policy;
     a.revision = expectedRevision + 1;
     return { revision: a.revision };
@@ -159,15 +169,20 @@ export class MockAgentApi implements AgentClient {
 
   private checkGrant(token: string, agentId: string) {
     const g = this.grants.get(token);
-    if (!g || g.agentId !== agentId) throw new AgentApiError("grant_invalid", undefined, 401);
-    if (g.revoked) throw new AgentApiError("grant_revoked", undefined, 401);
-    if (g.expiresAt <= this.clock.now()) throw new AgentApiError("grant_expired", undefined, 401);
+    if (!g || g.agentId !== agentId) throw new AgentApiError("agent_grant_required", undefined, 401);
+    if (g.revoked) throw new AgentApiError("agent_grant_required", undefined, 401);
+    if (g.expiresAt <= this.clock.now()) throw new AgentApiError("agent_grant_required", undefined, 401);
   }
 
   private async withdraw(token: string, agentId: string, req: WithdrawRequest, key: string) {
     this.checkGrant(token, agentId);
+    const fingerprint = JSON.stringify([req.asset, req.amount, req.chain, req.recipient, req.memo ?? null]);
     const replay = this.byKey.get(`${agentId}:${key}`);
-    if (replay) return { ...replay };
+    if (replay) {
+      // Same key + same request replays the original; the same key with a different body is a conflict.
+      if (replay.fingerprint !== fingerprint) throw new AgentApiError("idempotency_conflict", undefined, 409);
+      return { ...replay.op };
+    }
 
     const a = this.agent(agentId);
     const policy = this.requirePolicy(agentId);
@@ -181,7 +196,7 @@ export class MockAgentApi implements AgentClient {
     };
     a.actionTimes.push(this.clock.now());
     this.ops.set(op.correlation_id, op);
-    this.byKey.set(`${agentId}:${key}`, op);
+    this.byKey.set(`${agentId}:${key}`, { op, fingerprint });
     this.opAgent.set(op.correlation_id, agentId);
 
     if (policy.timelock_ms > 0) {
@@ -194,9 +209,9 @@ export class MockAgentApi implements AgentClient {
 
   /** Policy layers, in the order the real API reports them. */
   private validate(a: Agent, p: Policy, req: WithdrawRequest) {
-    if (p.frozen) throw new AgentApiError("agent_frozen");
+    if (p.frozen) throw new AgentApiError("wallet_frozen");
     if (!p.actions.includes("withdraw")) throw new AgentApiError("policy_action_denied");
-    if (p.assets !== "any" && !p.assets.includes(req.asset)) throw new AgentApiError("policy_asset_denied");
+    if (p.assets !== "any" && !p.assets.includes(req.asset)) throw new AgentApiError("policy_denied");
 
     const listed = p.destinations.list.some(
       (d) =>
@@ -215,7 +230,7 @@ export class MockAgentApi implements AgentClient {
     if (p.max_actions_per_hour !== null) {
       const since = this.clock.now() - 3_600_000;
       if (a.actionTimes.filter((t) => t > since).length >= p.max_actions_per_hour)
-        throw new AgentApiError("policy_rate_limited", undefined, 429);
+        throw new AgentApiError("policy_action_limit_exceeded", undefined, 429);
     }
     if ((a.balances.get(req.asset) ?? 0n) < amount) throw new AgentApiError("insufficient_balance");
   }

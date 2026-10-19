@@ -33,3 +33,11 @@ export function buildHouseMoneyPolicy(input: HouseMoneyPolicyInput): Policy {
     timelock_ms: input.timelockMs ?? DEFAULT_TIMELOCK_MS,
   };
 }
+
+/**
+ * The same policy with `withdraw` removed. Applied after the principal has settled, it turns
+ * "exactly once" from a runner convention into a policy fact: no grant, old or new, can withdraw again.
+ */
+export function buildSealedPolicy(policy: Policy): Policy {
+  return { ...policy, actions: policy.actions.filter((a) => a !== "withdraw") };
+}
