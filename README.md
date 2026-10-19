@@ -13,8 +13,8 @@ strategy can reach it.
 |---|---|
 | **Stack** | Next.js (App Router), React, Tailwind CSS v4, TypeScript |
 | **Integration** | `@near-intents-agent-api/sdk` (real client) and a policy-enforcing mock |
-| **Verification** | 58 unit tests, a 19-check browser test, a headless end-to-end simulation |
-| **Status** | Complete on the mock. Live mainnet run pending credentials and funds (see [Going live](#going-live)) |
+| **Verification** | 86 unit tests, a 22-check browser test, a headless end-to-end simulation |
+| **Status** | Complete on the mock, including a trading agent. The live mainnet run is built and guarded but has not been executed (see [Going live](#going-live)) |
 
 ## Contents
 
@@ -65,6 +65,25 @@ On the real Agent API this corresponds to a `policy_update` (a single `only` des
 per-transaction cap equal to the principal, and `timelock_ms`), a `grant_issue` for the strategy,
 and a grant-scoped `withdraw` carrying an idempotency key.
 
+## The trading agent
+
+`src/lib/strategy/` is the part that earns the gains. `TrendStrategy` (an EMA with a dead band) decides
+whether to hold the risk asset or the stake asset; `Trader` quotes, then swaps through the grant. It
+cooperates with the runner through three rules:
+
+- **Cash first.** At the trigger the trader converts the position into the stake asset. The withdrawal needs
+  that balance when it is requested and again when its timelock releases it, and a gain held in another
+  asset cannot be withdrawn as the stake. Until the cash is there the runner reports `awaiting_cash`.
+- **Reserve.** While the exit is queued, the stake-asset balance it needs is never swapped away.
+- **Latched trigger.** The first time equity reaches the trigger it is recorded. A dip while the cash is being
+  raised does not cancel the exit.
+
+The policy's `timelock_ms` applies to every money action except deposits, so a swap is queued for the veto
+window too and fills at the price when it releases, not when it was requested. `min_amount_out` therefore only
+guards against a disaster; size `slippageBps` to how far the market moves over the delay. The mock models all
+of this (queued swaps, re-pricing at release, `min_amount_out_not_met`). The strategy is exercised on a
+deterministic price path (the **Trading Agent** page); it has not traded real markets.
+
 ## Safety model
 
 Every refusal below is produced by the policy layer and is exercised by `runRefusalMatrix` (the
@@ -114,10 +133,11 @@ The accent colour is a single design token, `--accent` in `src/app/globals.css`.
 | Script | Description |
 |---|---|
 | `npm run dev`, `build`, `start` | Standard Next.js development, build and production server |
-| `npm run check` | Generates Next.js route types, typechecks, then runs all 58 tests |
+| `npm run check` | Generates Next.js route types, typechecks, then runs all 86 tests |
 | `npm test` | Unit tests only (`src/lib/**/*.test.ts`) |
 | `npm run simulate` | Plays the whole story headless and verifies the outcome and the refusal matrix. Add `-- --realtime` for the 55 s live pacing. Exits non-zero on any failure |
 | `npm run live:check` | Read-only check of the real Agent API: network status, token catalog, runner pricing on live data, and the API key if set. Moves no funds |
+| `npm run live:run` | The real thing, on mainnet. Prints the plan and the policy it would sign and sends nothing, unless `HOUSE_CONFIRM=spend-real-funds` is set. See [Going live](#going-live) |
 | `npm run e2e` | Starts the production server and drives Chrome through every page and button. Run `npm run build` first |
 
 ## Project structure
@@ -128,6 +148,7 @@ The accent colour is a single design token, `--accent` in `src/app/globals.css`.
 ├── scripts/
 │   ├── simulate.mts        Headless run of the full scenario
 │   ├── live-check.mts      Read-only check of the real Agent API
+│   ├── live-run.mts        Guarded run against the real Agent API (real funds)
 │   └── e2e.mts             Browser test (Playwright, system Chrome)
 └── src/
     ├── app/                Routes: landing, live simulation, policy, safety, events
@@ -135,7 +156,8 @@ The accent colour is a single design token, `--accent` in `src/app/globals.css`.
     └── lib/
         ├── policy/         Policy builder and Agent API types
         ├── risk/           Fail-closed pricing, principal trigger, idempotency key
-        ├── agent-api/      Client interfaces, policy-enforcing mock, real-API client
+        ├── agent-api/      Client interfaces, policy-enforcing mock, real-API client, NEAR owner signer
+        ├── strategy/       Trend strategy and the trader (swap, cash-first, reserve)
         ├── runner/         Strategy loop, persisted state, typed event log
         └── simulation/     Deterministic strategy, steppable scenario, refusal matrix
 ```
@@ -149,7 +171,8 @@ Unit tests are colocated with the code they cover (`*.test.ts`).
 | Unit and integration | `npm test` | Policy, pricing, trigger, mock enforcement, runner behaviour, real-API client (through the real SDK against a fake network), simulation, refusal matrix |
 | Static | `npm run typecheck` | TypeScript strict mode, including Next.js route types |
 | Headless scenario | `npm run simulate` | Equity doubles, the principal exits exactly once, the red day burns only house money, nine refusal checks hold |
-| Browser | `npm run e2e` | 19 checks in Chrome: autoplay, all pages, every button, the owner veto, reset, theme colour |
+| Browser | `npm run live:run` | The real thing, on mainnet. Prints the plan and the policy it would sign and sends nothing, unless `HOUSE_CONFIRM=spend-real-funds` is set. See [Going live](#going-live) |
+| `npm run e2e` | 22 checks in Chrome: autoplay, all pages, the trading replay, every button, the owner veto, reset, theme colour |
 | Live read-only | `npm run live:check` | Real network status and token catalog; verifies the runner's pricing against live prices |
 
 ## Demonstration
@@ -180,24 +203,31 @@ as a terminal fallback.
 - **Simulated gains.** The live service is mainnet-only and offers no test network, so gains cannot be
   simulated against it.
 - **Live client not yet run against the service.** It is tested through the real SDK against a fake
-  network. The mock does not model `confidential`, `owner_approval` or USD budgets.
+  network, and the owner signer is tested on its own, but neither has signed or sent anything to the real
+  service. The mock does not model `confidential`, `owner_approval` or USD budgets.
+- **The strategy has only seen a scripted price path.** It is a simple trend follower. Its swap-quote parsing
+  (`quoteAmountOut`) reads the quote defensively because the API schema leaves the quote's fields open.
+- **A swap that fails its minimum output** is a mock-only code (`min_amount_out_not_met`); the real API's
+  response is undocumented.
 
 ## Going live
 
 `LiveAgentApi` (`src/lib/agent-api/live.ts`) implements the same interfaces as the mock on top of
-`@near-intents-agent-api/sdk`, so the runner and simulation need no changes. What remains is supplying
-inputs:
+`@near-intents-agent-api/sdk`, and `NearOwnerSigner` (`near-signer.ts`) signs the owner's intents with an
+ed25519 NEAR key (`nep413` and `nep366`). `npm run live:run` wires them to the runner and, optionally, the
+trader. What remains is supplying inputs:
 
-1. **API key.** Create a `naa_...` key in the partner dashboard and export it as
-   `NEAR_INTENTS_AGENT_API_KEY`. `npm run live:check` validates it without moving funds.
-2. **Owner signer.** A dedicated NEAR owner account holding little value, and an `OwnerSigner`
-   implementation for it. The signer returns the wallet's signature for `generated.intent`; see the
-   SDK documentation on signing. The SDK ships no signers.
-3. **Funding.** A small USDC stake in the agent, and a safe-account address on Base.
-4. **Runtime.** Node.js 24 or later.
-5. **Approval to transact.** The hosted API runs on mainnet with real funds.
+1. **API key.** Create a `naa_...` key in the partner dashboard: `NEAR_INTENTS_AGENT_API_KEY`.
+   `npm run live:check` validates it without moving funds.
+2. **Owner account.** A dedicated, low-value NEAR account that owns an existing agent:
+   `NEAR_OWNER_ACCOUNT_ID` and `NEAR_OWNER_PRIVATE_KEY` (never commit the key).
+3. **Funding.** A small stake in the agent, and a safe address: `HOUSE_AGENT_ID`, `HOUSE_ASSET`,
+   `HOUSE_PRINCIPAL`, `HOUSE_SAFE_CHAIN`, `HOUSE_SAFE_ADDRESS`.
+4. **Runtime.** Node.js 24 or later; the script refuses to transact on anything older.
+5. **Approval to transact.** The hosted API runs on mainnet with real funds. Without
+   `HOUSE_CONFIRM=spend-real-funds` the script prints the plan and policy and exits.
 
 Use asset identifiers from `GET /v1/tokens`. For example, NEAR-chain USDC is
-`nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`. A live run demonstrates the
-withdrawal, the timelock and the refusals, using a lowered trigger multiple, since gains cannot be
-simulated on mainnet.
+`nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`. Mainnet gains cannot be simulated,
+so lower the trigger (`HOUSE_MULTIPLE_BPS=10100` is 1.01x) and a short `HOUSE_TIMELOCK_MS` to watch the exit and
+the refusals happen on a small stake. Set `HOUSE_RISK_ASSET` to let the agent trade as well.
