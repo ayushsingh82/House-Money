@@ -138,6 +138,7 @@ The accent colour is a single design token, `--accent` in `src/app/globals.css`.
 | `npm run simulate` | Plays the whole story headless and verifies the outcome and the refusal matrix. Add `-- --realtime` for the 55 s live pacing. Exits non-zero on any failure |
 | `npm run live:check` | Read-only check of the real Agent API: network status, token catalog, runner pricing on live data, and the API key if set. Moves no funds |
 | `npm run live:run` | The real thing, on mainnet. Prints the plan and the policy it would sign and sends nothing, unless `HOUSE_CONFIRM=spend-real-funds` is set. See [Going live](#going-live) |
+| `npm run live:create-agent` | Creates the owner's agent (empty, no withdrawals, $10/day budget) and prints `HOUSE_AGENT_ID`. Moves no funds. See [Live setup walkthrough](#live-setup-walkthrough) |
 | `npm run e2e` | Starts the production server and drives Chrome through every page and button. Run `npm run build` first |
 
 ## Project structure
@@ -231,3 +232,32 @@ Use asset identifiers from `GET /v1/tokens`. For example, NEAR-chain USDC is
 `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`. Mainnet gains cannot be simulated,
 so lower the trigger (`HOUSE_MULTIPLE_BPS=10100` is 1.01x) and a short `HOUSE_TIMELOCK_MS` to watch the exit and
 the refusals happen on a small stake. Set `HOUSE_RISK_ASSET` to let the agent trade as well.
+
+## Live setup walkthrough
+
+The steps taken to get from the simulation to a live run, in order.
+
+1. **Owner wallet.** Generate a dedicated, low-value NEAR owner account and a Base safe address into
+   `.secrets/` (gitignored). Put `NEAR_OWNER_ACCOUNT_ID` and `NEAR_OWNER_PRIVATE_KEY` in the local `.env`.
+2. **API key.** The agent API keys come from the partner dashboard at
+   <https://partners.demo.agentsonintents.com/dashboard> (**API keys**, then create). The mainnet
+   dashboard at `partners.near-intents.org` only offers 1Click, relay, Explorer and circuit-breaker keys,
+   so it does not issue `naa_...` Agent API keys. Put the key in `.env` as `NEAR_INTENTS_AGENT_API_KEY`.
+3. **Point at the matching API.** A demo-dashboard key is rejected by `https://api.agentsonintents.com`
+   (`401 invalid_api_key`) and accepted by `https://api.demo.agentsonintents.com`. Set
+   `NEAR_INTENTS_BASE_URL=https://api.demo.agentsonintents.com` in `.env`. The scripts read it. Note that
+   `/v1/network` on the demo API still reports `mainnet`, so treat funds as real.
+4. **Check the key.** `npm run live:check` validates the key and the live token catalog. No funds move.
+5. **Fund the owner for gas.** The owner is an implicit NEAR account that does not exist until it receives
+   NEAR. Send about 0.1 to 0.5 NEAR to `NEAR_OWNER_ACCOUNT_ID`. Without it, signing fails with
+   `AccessKeyDoesNotExistError`.
+6. **Create the agent.** The dashboard has no create button; agents are created through the SDK.
+   `npm run live:create-agent` generates the `agent_create` intent, signs it with the owner key, submits it,
+   waits for `SUCCESS` and prints `HOUSE_AGENT_ID=...`. Put that in `.env`.
+7. **Choose the stake.** Set `HOUSE_PRINCIPAL` (for example 5 USDC) and deposit that stake into the agent.
+8. **Dry run.** `npm run live:run` prints the plan and the policy it would sign, and sends nothing.
+9. **Go live.** Only when you are ready to spend real funds, set `HOUSE_CONFIRM=spend-real-funds` and run
+   `npm run live:run` again.
+
+`.env` and `.secrets/` are gitignored. Never put `NEAR_OWNER_PRIVATE_KEY`, the API key or `HOUSE_CONFIRM`
+on a deployed server; the web app reads no environment variables.
