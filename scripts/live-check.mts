@@ -10,8 +10,9 @@ import { portfolioValueMicroUsd } from "@/lib/risk/pricing";
 
 const key = process.env.NEAR_INTENTS_AGENT_API_KEY;
 const apiKey = key ?? `naa_${"0".repeat(43)}`; // well-formed placeholder: public endpoints ignore it
-const sdk = createAgentApi({ apiKey });
-const live = new LiveAgentApi({ apiKey, owner: { sign: async () => { throw new Error("read-only check: no signing"); } } });
+const baseUrl = process.env.NEAR_INTENTS_BASE_URL;
+const sdk = createAgentApi({ apiKey, baseUrl });
+const live = new LiveAgentApi({ apiKey, baseUrl, owner: { sign: async () => { throw new Error("read-only check: no signing"); } } });
 
 const network = await sdk.getNetwork();
 console.log(`network: ${network.network}, overall status: ${network.status.overall}`);

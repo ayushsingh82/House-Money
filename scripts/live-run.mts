@@ -6,6 +6,7 @@
  * Needs Node.js 24+, an existing agent funded with the stake asset, and:
  *   NEAR_INTENTS_AGENT_API_KEY   naa_... key
  *   NEAR_OWNER_ACCOUNT_ID, NEAR_OWNER_PRIVATE_KEY   the agent's owner (use a dedicated, low-value account)
+ *   NEAR_INTENTS_BASE_URL        optional API base URL (default: the hosted API)
  *   HOUSE_AGENT_ID               64-hex agent id
  *   HOUSE_ASSET                  stake asset id from GET /v1/tokens (e.g. NEAR USDC)
  *   HOUSE_PRINCIPAL              stake in whole units of that asset (e.g. 5)
@@ -48,7 +49,7 @@ const riskAsset = process.env.HOUSE_RISK_ASSET;
 const confirmed = process.env.HOUSE_CONFIRM === "spend-real-funds";
 
 const owner = nearOwnerFromEnv();
-const live = new LiveAgentApi({ apiKey, owner });
+const live = new LiveAgentApi({ apiKey, baseUrl: process.env.NEAR_INTENTS_BASE_URL, owner });
 const tokens = await live.getTokens();
 const stake = tokens.find((t) => t.asset_id === asset);
 if (!stake || stake.price === null) throw new Error(`${asset} is not priced in the token catalog`);

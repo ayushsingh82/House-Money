@@ -11,9 +11,10 @@
     "test": "tsx --test \"src/lib/**/*.test.ts\"",
     "simulate": "tsx scripts/simulate.mts",
     "check": "npm run typecheck && npm test",
-    "live:check": "tsx scripts/live-check.mts",
+    "live:check": "tsx --env-file=.env scripts/live-check.mts",
     "e2e": "tsx scripts/e2e.mts",
-    "live:run": "tsx scripts/live-run.mts"
+    "live:run": "tsx --env-file=.env scripts/live-run.mts",
+    "live:create-agent": "tsx --env-file=.env scripts/create-agent.mts"
   },
   "dependencies": {
     "@near-intents-agent-api/sdk": "^0.5.2",
